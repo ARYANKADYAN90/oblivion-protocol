@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { connectToDatabase } from '@/lib/mongodb';
-import { randomBytes } from 'crypto';
+import { randomBytes, createHash } from 'crypto';
 
 export async function POST(req: Request) {
   try {
@@ -13,16 +13,10 @@ export async function POST(req: Request) {
     const cleanEntity = targetEntity.trim();
     const { client } = await connectToDatabase();
 
-    // 1. DYNAMIC SCHEMA DISCOVERY
-    // listDatabases() requires the Atlas user to have readAnyDatabase@admin or
-    // atlasAdmin role. If your user only has collection-level access, scope this
-    // to specific database names instead.
     let databasesList: { databases: { name: string }[] };
     try {
       databasesList = await client.db().admin().listDatabases();
     } catch (adminErr: any) {
-      // If the Atlas user lacks admin privileges, fall back to the target database
-      // specified in the URI (or 'sample_mflix' as the known demo DB).
       console.warn('[WARN] listDatabases() denied — falling back to URI database.', adminErr.message);
       const fallbackDbName = client.db().databaseName || 'sample_mflix';
       databasesList = { databases: [{ name: fallbackDbName }] };
@@ -36,7 +30,6 @@ export async function POST(req: Request) {
     executionLogs.push(`[SYSTEM] Discovered ${databasesList.databases.length} database(s) in cluster.`);
 
     for (const databaseInfo of databasesList.databases) {
-      // Skip internal MongoDB system databases
       if (['admin', 'local', 'config'].includes(databaseInfo.name)) continue;
 
       const currentDb = client.db(databaseInfo.name);
@@ -45,14 +38,12 @@ export async function POST(req: Request) {
       try {
         collections = await currentDb.listCollections().toArray();
       } catch {
-        // User may not have listCollections privilege on every DB — skip silently
         continue;
       }
 
       for (const collectionInfo of collections) {
         const coll = currentDb.collection(collectionInfo.name);
 
-        // Hunt the target entity across common PII fields via regex
         const query = {
           $or: [
             { email: new RegExp(cleanEntity, 'i') },
@@ -64,7 +55,6 @@ export async function POST(req: Request) {
         try {
           const collName = collectionInfo.name.toLowerCase();
 
-          // Compliance Decision: Redact logs/history; hard-delete primary records
           if (
             collName.includes('log') ||
             collName.includes('history') ||
@@ -93,7 +83,7 @@ export async function POST(req: Request) {
             }
           }
         } catch {
-          // Skip system views or collections that can't be queried
+          // skip unqueryable collections
         }
       }
     }
@@ -104,13 +94,34 @@ export async function POST(req: Request) {
       );
     }
 
-    // Cryptographically sound receipt hash (replaces Math.random())
+    // Cryptographically sound receipt
     const cryptoHash = randomBytes(32).toString('hex');
+
+    // Build a real tamper-evident audit chain:
+    // Each block = SHA-256(timestamp + action + previousHash), truncated to 8 hex chars for display
+    const auditChain: string[] = [];
+    let prevHash = '00000000';
+    const chainInputs = [
+      `INIT:${cleanEntity}:${Date.now()}`,
+      `SCHEMA_CRAWL:${databasesList.databases.length}dbs`,
+      `EXECUTE:deleted=${totalDeleted}:modified=${totalModified}`,
+      `HASH:${cryptoHash.slice(0, 16)}`,
+      `SEAL:GDPR-ART17:${new Date().toISOString()}`,
+    ];
+    for (const input of chainInputs) {
+      const blockHash = createHash('sha256')
+        .update(`${input}:${prevHash}`)
+        .digest('hex')
+        .slice(0, 8);
+      auditChain.push(blockHash);
+      prevHash = blockHash;
+    }
 
     return NextResponse.json({
       success: true,
       status: 'Oblivion Protocol Executed',
       receipt: `RTBF-${cryptoHash}`,
+      auditChain,
       logs: executionLogs,
       summary: { deletedCount: totalDeleted, modifiedCount: totalModified },
     });

@@ -29,7 +29,7 @@ Oblivion Protocol is a zero-trust, multi-agent AI orchestration pipeline designe
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/oblivion-protocol.git
+git clone https://github.com/ARYANKADYAN90/oblivion-protocol.git
 
 # Install dependencies
 npm install

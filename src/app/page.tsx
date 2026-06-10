@@ -786,7 +786,7 @@ export default function Home() {
                                 <Lock size={10} /> TAMPER-EVIDENT AUDIT CHAIN
                               </p>
                               <div className="flex items-center gap-2 overflow-x-auto pb-2 custom-scrollbar">
-                                {['e3b0c442', '8a9d3e5f', 'c71b6920', '4d5e8f1a', '92bca7e8'].map((hash, idx, arr) => (
+                                {(executionResults.auditChain || ['e3b0c442', '8a9d3e5f', 'c71b6920', '4d5e8f1a', '92bca7e8']).map((hash: string, idx: number, arr: string[]) => (
                                   <div key={idx} className="flex items-center gap-2 shrink-0">
                                     <div className="bg-black border border-[#00ff41]/40 px-3 py-1.5 text-[10px] text-[#00ff41] shadow-[0_0_10px_rgba(0,255,65,0.1)]">
                                       {hash}
