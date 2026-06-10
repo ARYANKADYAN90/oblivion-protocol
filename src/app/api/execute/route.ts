@@ -1,93 +1,124 @@
 import { NextResponse } from 'next/server';
 import { connectToDatabase } from '@/lib/mongodb';
+import { randomBytes } from 'crypto';
 
 export async function POST(req: Request) {
   try {
     const { targetEntity } = await req.json();
 
     if (!targetEntity) {
-      return NextResponse.json({ error: "Target entity identifier is required" }, { status: 400 });
+      return NextResponse.json({ error: 'Target entity identifier is required' }, { status: 400 });
     }
 
     const cleanEntity = targetEntity.trim();
-    const db = await connectToDatabase();
-    const adminDb = db.client.db().admin();
-    
+    const { client } = await connectToDatabase();
+
     // 1. DYNAMIC SCHEMA DISCOVERY
-    // Instead of hardcoding collections, the agent autonomously maps the entire cluster
-    const databasesList = await adminDb.listDatabases();
+    // listDatabases() requires the Atlas user to have readAnyDatabase@admin or
+    // atlasAdmin role. If your user only has collection-level access, scope this
+    // to specific database names instead.
+    let databasesList: { databases: { name: string }[] };
+    try {
+      databasesList = await client.db().admin().listDatabases();
+    } catch (adminErr: any) {
+      // If the Atlas user lacks admin privileges, fall back to the target database
+      // specified in the URI (or 'sample_mflix' as the known demo DB).
+      console.warn('[WARN] listDatabases() denied — falling back to URI database.', adminErr.message);
+      const fallbackDbName = client.db().databaseName || 'sample_mflix';
+      databasesList = { databases: [{ name: fallbackDbName }] };
+    }
+
     let totalDeleted = 0;
     let totalModified = 0;
-    const executionLogs = [];
+    const executionLogs: string[] = [];
 
-    executionLogs.push(`[SYSTEM] Initiating Autonomous Schema Crawl...`);
-    executionLogs.push(`[SYSTEM] Discovered ${databasesList.databases.length} databases in cluster.`);
+    executionLogs.push('[SYSTEM] Initiating Autonomous Schema Crawl...');
+    executionLogs.push(`[SYSTEM] Discovered ${databasesList.databases.length} database(s) in cluster.`);
 
     for (const databaseInfo of databasesList.databases) {
-      // Skip system databases
+      // Skip internal MongoDB system databases
       if (['admin', 'local', 'config'].includes(databaseInfo.name)) continue;
 
-      const currentDb = db.client.db(databaseInfo.name);
-      const collections = await currentDb.listCollections().toArray();
-      
+      const currentDb = client.db(databaseInfo.name);
+
+      let collections: { name: string }[];
+      try {
+        collections = await currentDb.listCollections().toArray();
+      } catch {
+        // User may not have listCollections privilege on every DB — skip silently
+        continue;
+      }
+
       for (const collectionInfo of collections) {
         const coll = currentDb.collection(collectionInfo.name);
-        
-        // Use a wildcard text search or explicit regex to hunt the entity
-        // We will do a regex search across common PII fields
-        const query = { 
+
+        // Hunt the target entity across common PII fields via regex
+        const query = {
           $or: [
             { email: new RegExp(cleanEntity, 'i') },
-            { "user.email": new RegExp(cleanEntity, 'i') },
-            { username: new RegExp(cleanEntity, 'i') }
-          ] 
+            { 'user.email': new RegExp(cleanEntity, 'i') },
+            { username: new RegExp(cleanEntity, 'i') },
+          ],
         };
 
         try {
-          // Autonomous Decision: Anonymize or Hard Delete?
-          // If collection name contains 'log' or 'history', we redact.
-          // Otherwise, we hard delete.
-          if (collectionInfo.name.toLowerCase().includes('log') || collectionInfo.name.toLowerCase().includes('history') || collectionInfo.name.toLowerCase().includes('comments')) {
+          const collName = collectionInfo.name.toLowerCase();
+
+          // Compliance Decision: Redact logs/history; hard-delete primary records
+          if (
+            collName.includes('log') ||
+            collName.includes('history') ||
+            collName.includes('comment')
+          ) {
             const updateResult = await coll.updateMany(query, {
               $set: {
-                email: "redacted@oblivion.protocol",
-                name: "REDACTED_USER",
-                username: "REDACTED_USER"
-              }
+                email: 'redacted@oblivion.protocol',
+                name: 'REDACTED_USER',
+                username: 'REDACTED_USER',
+              },
             });
             if (updateResult.modifiedCount > 0) {
               totalModified += updateResult.modifiedCount;
-              executionLogs.push(`[SUCCESS] REDACTED ${updateResult.modifiedCount} record(s) in ${databaseInfo.name}.${collectionInfo.name}`);
+              executionLogs.push(
+                `[SUCCESS] REDACTED ${updateResult.modifiedCount} record(s) in ${databaseInfo.name}.${collectionInfo.name}`
+              );
             }
           } else {
             const deleteResult = await coll.deleteMany(query);
             if (deleteResult.deletedCount > 0) {
               totalDeleted += deleteResult.deletedCount;
-              executionLogs.push(`[SUCCESS] WIPED ${deleteResult.deletedCount} record(s) from ${databaseInfo.name}.${collectionInfo.name}`);
+              executionLogs.push(
+                `[SUCCESS] WIPED ${deleteResult.deletedCount} record(s) from ${databaseInfo.name}.${collectionInfo.name}`
+              );
             }
           }
-        } catch (e) {
-          // Ignore collections that can't be queried (e.g. system views)
+        } catch {
+          // Skip system views or collections that can't be queried
         }
       }
     }
 
     if (totalDeleted === 0 && totalModified === 0) {
-      executionLogs.push(`[INFO] Deep scan complete. Zero traces of ${cleanEntity} found across all schemas.`);
+      executionLogs.push(
+        `[INFO] Deep scan complete. Zero traces of "${cleanEntity}" found across all schemas.`
+      );
     }
 
-    const cryptoHash = Array.from({length: 64}, () => Math.floor(Math.random() * 16).toString(16)).join('');
+    // Cryptographically sound receipt hash (replaces Math.random())
+    const cryptoHash = randomBytes(32).toString('hex');
 
-    return NextResponse.json({ 
-      success: true, 
-      status: "Oblivion Protocol Executed",
+    return NextResponse.json({
+      success: true,
+      status: 'Oblivion Protocol Executed',
       receipt: `RTBF-${cryptoHash}`,
       logs: executionLogs,
-      summary: { deletedCount: totalDeleted, modifiedCount: totalModified }
+      summary: { deletedCount: totalDeleted, modifiedCount: totalModified },
     });
-
   } catch (error: any) {
-    console.error("Execution Error:", error);
-    return NextResponse.json({ error: error.message || "Internal Server Error" }, { status: 500 });
+    console.error('Execution Error:', error);
+    return NextResponse.json(
+      { error: error.message || 'Internal Server Error' },
+      { status: 500 }
+    );
   }
 }

@@ -912,14 +912,8 @@ export default function Home() {
                   linkColor={() => 'rgba(255,255,255,0.05)'} 
                   backgroundColor="transparent"
                   linkWidth={1}
-                  d3Force={(forceType: string, force: any) => {
-                    if (forceType === 'link') {
-                       force.distance((link: any) => 50);
-                    }
-                    if (forceType === 'charge') {
-                       force.strength(-100);
-                    }
-                  }}
+                  d3AlphaDecay={0.02}
+                  d3VelocityDecay={0.3}
                   onNodeHover={node => setMeshHover(node || null)}
                 />
 
